@@ -401,15 +401,25 @@ window.addEventListener('load', async () => {
 
 function initMsal(){
   if (!CFG.clientId){ document.getElementById('signInBtn').disabled = true; return; }
-  msalInstance = new msal.PublicClientApplication({
-    auth:{
-      clientId: CFG.clientId,
-      authority: `https://login.microsoftonline.com/${CFG.tenantId || 'common'}`,
-      redirectUri: window.location.href.split('#')[0].split('?')[0]
-    },
-    cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:true }
-  });
-  document.getElementById('signInBtn').disabled = false;
+  if (typeof msal === 'undefined'){
+    showToast('Microsoft sign-in library failed to load — check your connection and reload the page', true);
+    document.getElementById('signInBtn').disabled = true;
+    return;
+  }
+  try{
+    msalInstance = new msal.PublicClientApplication({
+      auth:{
+        clientId: CFG.clientId,
+        authority: `https://login.microsoftonline.com/${CFG.tenantId || 'common'}`,
+        redirectUri: window.location.href.split('#')[0].split('?')[0]
+      },
+      cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:true }
+    });
+    document.getElementById('signInBtn').disabled = false;
+  }catch(e){
+    showToast('Could not set up sign-in: ' + e.message, true);
+    document.getElementById('signInBtn').disabled = true;
+  }
 }
 
 async function tryRestoreSession(){
@@ -436,7 +446,7 @@ function saveConfig(){
   CFG.sheet = document.getElementById('cfgSheet').value.trim() || 'Sheet1';
   CFG.table = document.getElementById('cfgTable').value.trim() || 'InventoryTable';
   try{ localStorage.setItem('binwatch_cfg', JSON.stringify(CFG)); }catch(e){}
-  initMsal();
+  try{ initMsal(); }catch(e){ /* surfaced inside initMsal already */ }
   showToast('Settings saved');
   toggleSettings();
 }
