@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>BinWatch — Warehouse Scanner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
+<style>
+  :root{
+    --bg: #14181C;
+    --panel: #1C2329;
+    --panel-2: #232B32;
+    --line: #34404A;
+    --ink: #E9E6DD;
+    --ink-dim: #9AA5AC;
+    --amber: #F2A93B;
+    --amber-ink: #1C1400;
+    --add: #4C9F70;
+    --move: #3B82A6;
+    --remove: #C1553B;
+    --danger: #C1553B;
+    --radius: 10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    min-height:100vh;
+    padding-bottom:40px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap{max-width:520px;margin:0 auto;padding:0 14px;}
+
+  /* header */
+  header.top{
+    position:sticky; top:0; z-index:20;
+    background: linear-gradient(180deg, var(--bg) 80%, transparent);
+    padding:14px 0 8px;
+  }
+  .brand{display:flex;align-items:center;justify-content:space-between;}
+  .brand-mark{display:flex;align-items:center;gap:10px;}
+  .brand-mark .chip{
+    width:34px;height:34px;border-radius:7px;
+    background: repeating-linear-gradient(135deg, var(--amber), var(--amber) 4px, #0000 4px, #0000 8px);
+    background-color: var(--amber);
+    display:flex;align-items:center;justify-content:center;
+    color:var(--amber-ink); font-family:'Oswald'; font-weight:700; font-size:15px;
+    box-shadow: inset 0 0 0 2px rgba(0,0,0,.25);
+  }
+  h1{
+    font-family:'Oswald', sans-serif; font-weight:700; letter-spacing:.5px;
+    font-size:20px; margin:0; text-transform:uppercase;
+  }
+  .status-pill{
+    display:flex; align-items:center; gap:6px;
+    font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.3px;
+    padding:5px 10px; border-radius:999px; background:var(--panel);
+    border:1px solid var(--line); color:var(--ink-dim); cursor:pointer;
+  }
+  .status-pill .dot{width:7px;height:7px;border-radius:50%; background:var(--danger);}
+  .status-pill.online .dot{background:var(--add);}
+
+  /* settings panel */
+  .settings{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:14px; margin-top:12px; display:none;
+  }
+  .settings.open{display:block;}
+  .settings h3{
+    font-family:'Oswald'; text-transform:uppercase; font-size:13px; letter-spacing:.5px;
+    margin:0 0 10px; color:var(--amber);
+  }
+  .field{margin-bottom:10px;}
+  .field label{display:block; font-size:11px; color:var(--ink-dim); margin-bottom:4px; font-family:'IBM Plex Mono';}
+  .field input, .field select{
+    width:100%; background:var(--panel-2); border:1px solid var(--line); color:var(--ink);
+    padding:9px 10px; border-radius:7px; font-size:14px; font-family:'IBM Plex Mono';
+  }
+  .field input:focus, .field select:focus{outline:1px solid var(--amber); border-color:var(--amber);}
+  .field .hint{font-size:11px; color:var(--ink-dim); margin-top:4px; line-height:1.4;}
+
+  button{font-family:'Inter'; cursor:pointer; border:none;}
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    padding:11px 16px; border-radius:8px; font-weight:600; font-size:14px;
+    background:var(--panel-2); color:var(--ink); border:1px solid var(--line);
+  }
+  .btn:active{transform:translateY(1px);}
+  .btn-amber{background:var(--amber); color:var(--amber-ink); border-color:var(--amber);}
+  .btn-block{width:100%;}
+  .btn-ghost{background:transparent;}
+  .btn[disabled]{opacity:.45; pointer-events:none;}
+
+  /* scan panel */
+  .scan-card{
+    margin-top:14px; border-radius:14px; overflow:hidden; position:relative;
+    background:#000; aspect-ratio: 4/3; border:1px solid var(--line);
+  }
+  .scan-card video{width:100%; height:100%; object-fit:cover; display:block;}
+  .scan-overlay{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;}
+  .reticle{
+    width:72%; aspect-ratio:2/1; position:relative;
+  }
+  .reticle::before, .reticle::after{content:'';position:absolute; width:26px; height:26px; border-color:var(--amber); border-style:solid;}
+  .reticle::before{top:0;left:0;border-width:3px 0 0 3px;}
+  .reticle::after{bottom:0;right:0;border-width:0 3px 3px 0;}
+  .reticle .c2::before{content:'';position:absolute; top:0; right:0; width:26px; height:26px; border:3px solid var(--amber); border-width:3px 3px 0 0;}
+  .reticle .c2::after{content:'';position:absolute; bottom:0; left:0; width:26px; height:26px; border:3px solid var(--amber); border-width:0 0 3px 3px;}
+  .scan-line{
+    position:absolute; left:6%; right:6%; height:2px; top:50%;
+    background: var(--amber); box-shadow:0 0 10px 1px var(--amber);
+    animation: sweep 2.1s ease-in-out infinite;
+  }
+  @keyframes sweep{
+    0%,100%{ transform: translateY(-40px); opacity:.85;}
+    50%{ transform: translateY(40px); opacity:.85;}
+  }
+  .scan-idle{
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:10px; background:var(--panel); color:var(--ink-dim); text-align:center; padding:20px;
+  }
+  .scan-idle .icon{font-size:34px;}
+  .flash{position:absolute; inset:0; background:var(--ink); opacity:0; pointer-events:none;}
+  .flash.go{animation:flashpop .35s ease-out;}
+  @keyframes flashpop{ 0%{opacity:.9;} 100%{opacity:0;} }
+
+  .scan-controls{display:flex; gap:8px; margin-top:10px;}
+  .scan-controls .btn{flex:1;}
+
+  .manual-row{display:flex; gap:8px; margin-top:10px;}
+  .manual-row input{flex:1; background:var(--panel-2); border:1px solid var(--line); color:var(--ink); padding:11px 12px; border-radius:8px; font-family:'IBM Plex Mono'; font-size:14px;}
+
+  /* result / ticket card */
+  .ticket{
+    margin-top:16px; background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    position:relative; overflow:hidden;
+  }
+  .ticket .perf{
+    height:0; border-top:2px dashed var(--line); margin:0 14px;
+  }
+  .ticket-head{padding:14px 16px 10px; display:flex; justify-content:space-between; align-items:flex-start; gap:10px;}
+  .ticket-head .barcode{font-family:'IBM Plex Mono'; font-size:12px; color:var(--ink-dim); letter-spacing:.5px;}
+  .ticket-head .item-name{font-family:'Oswald'; font-size:19px; font-weight:600; margin-top:2px; text-transform:uppercase;}
+  .ticket-head .new-tag{
+    font-family:'IBM Plex Mono'; font-size:10px; background:var(--amber); color:var(--amber-ink);
+    padding:3px 7px; border-radius:5px; white-space:nowrap; height:fit-content;
+  }
+  .bin-list{padding:4px 16px 14px; display:flex; flex-direction:column; gap:6px;}
+  .bin-row{
+    display:flex; justify-content:space-between; align-items:center;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:8px 12px;
+    font-family:'IBM Plex Mono'; font-size:13px;
+  }
+  .bin-row .qty{color:var(--amber); font-weight:600;}
+  .bin-empty{padding:14px 16px; color:var(--ink-dim); font-size:13px;}
+
+  .actions-row{display:flex; gap:8px; padding:0 16px 16px;}
+  .actions-row .btn{flex:1; flex-direction:column; padding:12px 6px; font-size:12px; gap:5px; text-transform:uppercase; letter-spacing:.3px;}
+  .actions-row .btn .ic{font-size:18px;}
+  .act-add{border-color:var(--add); color:var(--add);}
+  .act-move{border-color:var(--move); color:var(--move);}
+  .act-remove{border-color:var(--remove); color:var(--remove);}
+
+  /* modal */
+  .modal-bg{
+    position:fixed; inset:0; background:rgba(0,0,0,.55); display:none;
+    align-items:flex-end; justify-content:center; z-index:50;
+  }
+  .modal-bg.open{display:flex;}
+  .modal{
+    background:var(--panel); width:100%; max-width:520px; border-radius:16px 16px 0 0;
+    padding:18px 18px 26px; border:1px solid var(--line); border-bottom:none;
+  }
+  .modal h3{font-family:'Oswald'; text-transform:uppercase; margin:0 0 4px; font-size:17px;}
+  .modal .sub{color:var(--ink-dim); font-size:12px; margin-bottom:14px; font-family:'IBM Plex Mono';}
+  .modal .field{margin-bottom:12px;}
+  .modal-actions{display:flex; gap:10px; margin-top:6px;}
+  .modal-actions .btn{flex:1;}
+  .qty-stepper{display:flex; align-items:center; gap:10px;}
+  .qty-stepper button{width:42px;height:42px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);font-size:18px;}
+  .qty-stepper input{text-align:center;}
+
+  /* log */
+  .log-head{display:flex; justify-content:space-between; align-items:center; margin-top:22px; margin-bottom:8px;}
+  .log-head h2{font-family:'Oswald'; text-transform:uppercase; font-size:14px; letter-spacing:.5px; margin:0; color:var(--ink-dim);}
+  .log-list{display:flex; flex-direction:column; gap:8px;}
+  .log-item{
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:10px;
+    border-left:3px solid var(--line);
+  }
+  .log-item.add{border-left-color:var(--add);}
+  .log-item.move{border-left-color:var(--move);}
+  .log-item.remove{border-left-color:var(--remove);}
+  .log-item.err{border-left-color:var(--danger); background:#241717;}
+  .log-item .l-main{display:flex; flex-direction:column;}
+  .log-item .l-title{font-size:13px; font-weight:600;}
+  .log-item .l-sub{font-size:11px; color:var(--ink-dim); font-family:'IBM Plex Mono';}
+  .log-item .l-time{font-size:10px; color:var(--ink-dim); font-family:'IBM Plex Mono'; white-space:nowrap;}
+  .empty-log{color:var(--ink-dim); font-size:13px; padding:14px 0; text-align:center;}
+
+  .toast{
+    position:fixed; left:50%; bottom:20px; transform:translateX(-50%);
+    background:var(--panel-2); border:1px solid var(--line); color:var(--ink);
+    padding:10px 16px; border-radius:8px; font-size:13px; z-index:80; display:none;
+    max-width:90vw; text-align:center;
+  }
+  .toast.show{display:block;}
+  .toast.err{border-color:var(--danger); color:#ffb4a4;}
+
+  .gate{
+    margin-top:40px; text-align:center; padding:30px 18px; background:var(--panel);
+    border:1px solid var(--line); border-radius:14px;
+  }
+  .gate .ic{font-size:30px; margin-bottom:10px;}
+  .gate h2{font-family:'Oswald'; text-transform:uppercase; font-size:16px; margin:0 0 8px;}
+  .gate p{color:var(--ink-dim); font-size:13px; line-height:1.5; margin:0 0 16px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <div class="brand-mark">
+        <div class="chip">BW</div>
+        <h1>BinWatch</h1>
+      </div>
+      <div class="status-pill" id="statusPill" onclick="toggleSettings()">
+        <span class="dot"></span><span id="statusText">Not connected</span>
+      </div>
+    </div>
+
+    <div class="settings" id="settingsPanel">
+      <h3>Connection settings</h3>
+      <div class="field">
+        <label>Azure AD Application (client) ID</label>
+        <input id="cfgClientId" placeholder="00000000-0000-0000-0000-000000000000">
+      </div>
+      <div class="field">
+        <label>Azure AD Tenant ID (or "common")</label>
+        <input id="cfgTenantId" placeholder="common">
+      </div>
+      <div class="field">
+        <label>Excel file path in OneDrive</label>
+        <input id="cfgFilePath" placeholder="/InventoryTemplate.xlsx">
+        <div class="hint">Root of "My files" = /FileName.xlsx. In a folder = /Folder/FileName.xlsx</div>
+      </div>
+      <div class="field">
+        <label>Worksheet name</label>
+        <input id="cfgSheet" placeholder="Sheet1">
+      </div>
+      <div class="field">
+        <label>Table name</label>
+        <input id="cfgTable" placeholder="InventoryTable">
+      </div>
+      <button class="btn btn-amber btn-block" onclick="saveConfig()">Save settings</button>
+      <div class="hint" style="margin-top:10px;">Full setup steps (Azure app registration, permissions) are in the README that came with this file.</div>
+    </div>
+  </header>
+
+  <!-- Signed out gate -->
+  <div class="gate" id="gate">
+    <div class="ic">📦</div>
+    <h2>Connect OneDrive to start scanning</h2>
+    <p>BinWatch reads and writes an Excel table straight from your OneDrive over Microsoft Graph — no separate export step. Add your Azure app details in settings, then sign in.</p>
+    <button class="btn btn-amber" onclick="toggleSettings()">Open settings</button>
+    <div style="height:10px;"></div>
+    <button class="btn" id="signInBtn" onclick="signIn()" disabled>Sign in with Microsoft</button>
+  </div>
+
+  <!-- Main scanner UI -->
+  <div id="mainUI" style="display:none;">
+
+    <div class="scan-card" id="scanCard">
+      <video id="video" playsinline></video>
+      <div class="scan-overlay" id="scanOverlay" style="display:none;">
+        <div class="reticle"><div class="c2"></div></div>
+        <div class="scan-line"></div>
+      </div>
+      <div class="scan-idle" id="scanIdle">
+        <div class="icon">🔦</div>
+        <div>Tap "Start scanning" to activate the camera</div>
+      </div>
+      <div class="flash" id="flash"></div>
+    </div>
+
+    <div class="scan-controls">
+      <button class="btn btn-amber" id="scanToggleBtn" onclick="toggleScan()">Start scanning</button>
+      <button class="btn" onclick="refreshTable()">↻ Refresh table</button>
+    </div>
+
+    <div class="manual-row">
+      <input id="manualInput" placeholder="Or type a barcode manually" inputmode="numeric" onkeydown="if(event.key==='Enter')manualLookup()">
+      <button class="btn" onclick="manualLookup()">Look up</button>
+    </div>
+
+    <!-- Result ticket -->
+    <div class="ticket" id="ticket" style="display:none;">
+      <div class="ticket-head">
+        <div>
+          <div class="barcode" id="tBarcode">—</div>
+          <div class="item-name" id="tName">—</div>
+        </div>
+        <div class="new-tag" id="tNewTag" style="display:none;">NEW ITEM</div>
+      </div>
+      <div class="bin-list" id="tBinList"></div>
+      <div class="perf"></div>
+      <div class="actions-row">
+        <button class="btn act-add" onclick="openAction('add')"><span class="ic">＋</span>Add</button>
+        <button class="btn act-move" onclick="openAction('move')"><span class="ic">⇄</span>Move</button>
+        <button class="btn act-remove" onclick="openAction('remove')"><span class="ic">－</span>Remove</button>
+      </div>
+    </div>
+
+    <div class="log-head">
+      <h2>Activity</h2>
+      <button class="btn btn-ghost" style="font-size:11px; padding:4px 8px;" onclick="clearLog()">Clear</button>
+    </div>
+    <div class="log-list" id="logList">
+      <div class="empty-log">Scans and updates will show up here.</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Action modal -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3 id="modalTitle">Add stock</h3>
+    <div class="sub" id="modalSub">—</div>
+
+    <div id="modalFromBinWrap" class="field" style="display:none;">
+      <label>From bin</label>
+      <select id="modalFromBin"></select>
+    </div>
+
+    <div class="field" id="modalBinWrap">
+      <label id="modalBinLabel">Bin location</label>
+      <input id="modalBin" placeholder="e.g. A-01-03" style="text-transform:uppercase;">
+    </div>
+
+    <div class="field" id="modalNameWrap" style="display:none;">
+      <label>Item name (new item)</label>
+      <input id="modalItemName" placeholder="Item description">
+    </div>
+
+    <div class="field">
+      <label>Quantity</label>
+      <div class="qty-stepper">
+        <button onclick="stepQty(-1)">−</button>
+        <input id="modalQty" type="number" min="1" value="1" inputmode="numeric">
+        <button onclick="stepQty(1)">+</button>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-amber" id="modalConfirmBtn" onclick="confirmAction()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------------- Config & state ---------------- */
+const DEFAULTS = { clientId:'', tenantId:'common', filePath:'/InventoryTemplate.xlsx', sheet:'Sheet1', table:'InventoryTable' };
+let CFG = { ...DEFAULTS };
+try {
+  const saved = localStorage.getItem('binwatch_cfg');
+  if (saved) CFG = { ...CFG, ...JSON.parse(saved) };
+} catch(e) { /* storage unavailable in this context, in-memory only */ }
+
+let msalInstance = null;
+let account = null;
+let tokenScopes = ['User.Read', 'Files.ReadWrite'];
+
+let rowsCache = [];      // {index, barcode, itemName, bin, qty, lastUpdated, lastAction}
+let currentBarcode = null;
+let currentAction = null; // 'add' | 'move' | 'remove'
+let scanning = false;
+let codeReader = null;
+let lastScanTime = 0;
+
+/* ---------------- Init ---------------- */
+window.addEventListener('load', async () => {
+  document.getElementById('cfgClientId').value = CFG.clientId;
+  document.getElementById('cfgTenantId').value = CFG.tenantId;
+  document.getElementById('cfgFilePath').value = CFG.filePath;
+  document.getElementById('cfgSheet').value = CFG.sheet;
+  document.getElementById('cfgTable').value = CFG.table;
+  initMsal();
+  await tryRestoreSession();
+});
+
+function initMsal(){
+  if (!CFG.clientId){ document.getElementById('signInBtn').disabled = true; return; }
+  msalInstance = new msal.PublicClientApplication({
+    auth:{
+      clientId: CFG.clientId,
+      authority: `https://login.microsoftonline.com/${CFG.tenantId || 'common'}`,
+      redirectUri: window.location.href.split('#')[0].split('?')[0]
+    },
+    cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:true }
+  });
+  document.getElementById('signInBtn').disabled = false;
+}
+
+async function tryRestoreSession(){
+  if (!msalInstance) return;
+  try{
+    const resp = await msalInstance.handleRedirectPromise();
+    if (resp && resp.account) account = resp.account;
+    const accts = msalInstance.getAllAccounts();
+    if (!account && accts.length) account = accts[0];
+    if (account){
+      setStatus(true);
+      showMain();
+      await refreshTable();
+    }
+  }catch(e){
+    showToast('Sign-in error: ' + e.message, true);
+  }
+}
+
+function saveConfig(){
+  CFG.clientId = document.getElementById('cfgClientId').value.trim();
+  CFG.tenantId = document.getElementById('cfgTenantId').value.trim() || 'common';
+  CFG.filePath = document.getElementById('cfgFilePath').value.trim() || '/InventoryTemplate.xlsx';
+  CFG.sheet = document.getElementById('cfgSheet').value.trim() || 'Sheet1';
+  CFG.table = document.getElementById('cfgTable').value.trim() || 'InventoryTable';
+  try{ localStorage.setItem('binwatch_cfg', JSON.stringify(CFG)); }catch(e){}
+  initMsal();
+  showToast('Settings saved');
+  toggleSettings();
+}
+
+function toggleSettings(){
+  document.getElementById('settingsPanel').classList.toggle('open');
+}
+
+/* ---------------- Auth ---------------- */
+async function signIn(){
+  if (!msalInstance){ showToast('Add your Client ID in settings first', true); return; }
+  try{
+    const resp = await msalInstance.loginPopup({ scopes: tokenScopes });
+    account = resp.account;
+    setStatus(true);
+    showMain();
+    await refreshTable();
+  }catch(e){
+    try{
+      await msalInstance.loginRedirect({ scopes: tokenScopes });
+    }catch(e2){
+      showToast('Sign-in failed: ' + e2.message, true);
+    }
+  }
+}
+
+async function getToken(){
+  if (!account) throw new Error('Not signed in');
+  try{
+    const r = await msalInstance.acquireTokenSilent({ scopes: tokenScopes, account });
+    return r.accessToken;
+  }catch(e){
+    const r = await msalInstance.acquireTokenPopup({ scopes: tokenScopes });
+    return r.accessToken;
+  }
+}
+
+function setStatus(online){
+  const pill = document.getElementById('statusPill');
+  const text = document.getElementById('statusText');
+  pill.classList.toggle('online', online);
+  text.textContent = online ? (account ? account.username : 'Connected') : 'Not connected';
+}
+
+function showMain(){
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('mainUI').style.display = 'block';
+}
+
+/* ---------------- Graph / Excel helpers ---------------- */
+function graphBase(){
+  const path = CFG.filePath.startsWith('/') ? CFG.filePath : '/' + CFG.filePath;
+  return `https://graph.microsoft.com/v1.0/me/drive/root:${encodeURI(path)}:/workbook`;
+}
+
+async function graphFetch(pathSuffix, options = {}){
+  const token = await getToken();
+  const res = await fetch(graphBase() + pathSuffix, {
+    ...options,
+    headers:{
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  if (!res.ok){
+    const body = await res.text();
+    throw new Error(`Graph ${res.status}: ${body.slice(0,200)}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+async function refreshTable(){
+  try{
+    showToast('Syncing with Excel…');
+    const data = await graphFetch(`/tables/${encodeURIComponent(CFG.table)}/rows`);
+    rowsCache = (data.value || []).map((row, i) => ({
+      index: i,
+      barcode: String(row.values[0][0] ?? '').trim(),
+      itemName: String(row.values[0][1] ?? ''),
+      bin: String(row.values[0][2] ?? ''),
+      qty: Number(row.values[0][3] ?? 0),
+      lastUpdated: row.values[0][4] ?? '',
+      lastAction: row.values[0][5] ?? ''
+    }));
+    setStatus(true);
+    showToast(`Synced — ${rowsCache.length} rows`);
+    if (currentBarcode) renderTicket(currentBarcode);
+  }catch(e){
+    showToast('Sync failed: ' + e.message, true);
+  }
+}
+
+async function addTableRow(values){
+  await graphFetch(`/tables/${encodeURIComponent(CFG.table)}/rows/add`, {
+    method:'POST',
+    body: JSON.stringify({ values: [values] })
+  });
+}
+
+async function updateTableRow(index, values){
+  await graphFetch(`/tables/${encodeURIComponent(CFG.table)}/rows/itemAt(index=${index})`, {
+    method:'PATCH',
+    body: JSON.stringify({ values: [values] })
+  });
+}
+
+/* ---------------- Barcode scanning ---------------- */
+async function toggleScan(){
+  if (scanning){ stopScan(); return; }
+  try{
+    document.getElementById('scanIdle').style.display = 'none';
+    document.getElementById('scanOverlay').style.display = 'flex';
+    codeReader = new ZXing.BrowserMultiFormatReader();
+    const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+    const backCam = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[devices.length-1];
+    scanning = true;
+    document.getElementById('scanToggleBtn').textContent = 'Stop scanning';
+    codeReader.decodeFromVideoDevice(backCam ? backCam.deviceId : undefined, 'video', (result, err) => {
+      if (result) handleScanResult(result.getText());
+    });
+  }catch(e){
+    showToast('Camera error: ' + e.message, true);
+    stopScan();
+  }
+}
+
+function stopScan(){
+  scanning = false;
+  document.getElementById('scanToggleBtn').textContent = 'Start scanning';
+  document.getElementById('scanIdle').style.display = 'flex';
+  document.getElementById('scanOverlay').style.display = 'none';
+  if (codeReader){ codeReader.reset(); codeReader = null; }
+}
+
+function handleScanResult(text){
+  const now = Date.now();
+  if (now - lastScanTime < 1200) return; // debounce repeat frames
+  lastScanTime = now;
+  const flash = document.getElementById('flash');
+  flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
+  if (navigator.vibrate) navigator.vibrate(60);
+  renderTicket(text.trim());
+}
+
+function manualLookup(){
+  const v = document.getElementById('manualInput').value.trim();
+  if (!v) return;
+  renderTicket(v);
+  document.getElementById('manualInput').value = '';
+}
+
+/* ---------------- Ticket / result rendering ---------------- */
+function renderTicket(barcode){
+  currentBarcode = barcode;
+  const matches = rowsCache.filter(r => r.barcode === barcode);
+  const ticket = document.getElementById('ticket');
+  ticket.style.display = 'block';
+  document.getElementById('tBarcode').textContent = barcode;
+  document.getElementById('tNewTag').style.display = matches.length ? 'none' : 'inline-block';
+  document.getElementById('tName').textContent = matches.length ? matches[0].itemName || '(unnamed item)' : 'Unrecognized barcode';
+
+  const list = document.getElementById('tBinList');
+  list.innerHTML = '';
+  if (!matches.length){
+    list.innerHTML = '<div class="bin-empty">No stock on record yet — use Add to create the first entry.</div>';
+  } else {
+    matches.sort((a,b) => a.bin.localeCompare(b.bin)).forEach(m => {
+      const row = document.createElement('div');
+      row.className = 'bin-row';
+      row.innerHTML = `<span>${escapeHtml(m.bin)}</span><span class="qty">${m.qty} pcs</span>`;
+      list.appendChild(row);
+    });
+  }
+  ticket.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------------- Action modal ---------------- */
+function openAction(action){
+  if (!currentBarcode) return;
+  currentAction = action;
+  const matches = rowsCache.filter(r => r.barcode === currentBarcode);
+  const title = { add:'Add stock', move:'Move stock', remove:'Remove stock' }[action];
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalSub').textContent = currentBarcode;
+
+  document.getElementById('modalFromBinWrap').style.display = action === 'move' ? 'block' : 'none';
+  document.getElementById('modalNameWrap').style.display = (action === 'add' && !matches.length) ? 'block' : 'none';
+  document.getElementById('modalBinLabel').textContent = action === 'move' ? 'To bin' : 'Bin location';
+  document.getElementById('modalBin').value = matches.length === 1 ? matches[0].bin : '';
+  document.getElementById('modalItemName').value = '';
+  document.getElementById('modalQty').value = 1;
+
+  if (action === 'move' || action === 'remove'){
+    const sel = document.getElementById('modalFromBin');
+    sel.innerHTML = '';
+    if (!matches.length){
+      showToast('No stock to ' + action, true);
+      return;
+    }
+    matches.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.bin;
+      opt.textContent = `${m.bin} (${m.qty} pcs)`;
+      sel.appendChild(opt);
+    });
+  }
+
+  document.getElementById('modalBg').classList.add('open');
+}
+
+function closeModal(){ document.getElementById('modalBg').classList.remove('open'); }
+function stepQty(delta){
+  const el = document.getElementById('modalQty');
+  el.value = Math.max(1, (parseInt(el.value || '1', 10) + delta));
+}
+
+async function confirmAction(){
+  const qty = Math.max(1, parseInt(document.getElementById('modalQty').value || '1', 10));
+  const barcode = currentBarcode;
+  const now = new Date().toISOString();
+  const btn = document.getElementById('modalConfirmBtn');
+  btn.disabled = true;
+
+  try{
+    if (currentAction === 'add'){
+      const bin = document.getElementById('modalBin').value.trim().toUpperCase();
+      if (!bin) throw new Error('Enter a bin location');
+      const existing = rowsCache.find(r => r.barcode === barcode && r.bin === bin);
+      const nameField = document.getElementById('modalItemName').value.trim();
+      const itemName = existing ? existing.itemName : (nameField || rowsCache.find(r=>r.barcode===barcode)?.itemName || '');
+      if (existing){
+        await updateTableRow(existing.index, [barcode, itemName, bin, existing.qty + qty, now, 'Add']);
+      } else {
+        await addTableRow([barcode, itemName, bin, qty, now, 'Add']);
+      }
+      logEvent('add', `+${qty} → ${bin}`, barcode);
+
+    } else if (currentAction === 'remove'){
+      const bin = document.getElementById('modalFromBin').value;
+      const existing = rowsCache.find(r => r.barcode === barcode && r.bin === bin);
+      if (!existing) throw new Error('That bin has no stock on record');
+      if (existing.qty < qty) throw new Error(`Only ${existing.qty} pcs in ${bin}`);
+      await updateTableRow(existing.index, [barcode, existing.itemName, bin, existing.qty - qty, now, 'Remove']);
+      logEvent('remove', `−${qty} from ${bin}`, barcode);
+
+    } else if (currentAction === 'move'){
+      const fromBin = document.getElementById('modalFromBin').value;
+      const toBin = document.getElementById('modalBin').value.trim().toUpperCase();
+      if (!toBin) throw new Error('Enter a destination bin');
+      if (toBin === fromBin) throw new Error('Destination must differ from source');
+      const src = rowsCache.find(r => r.barcode === barcode && r.bin === fromBin);
+      if (!src) throw new Error('Source bin has no stock on record');
+      if (src.qty < qty) throw new Error(`Only ${src.qty} pcs in ${fromBin}`);
+      await updateTableRow(src.index, [barcode, src.itemName, fromBin, src.qty - qty, now, 'Move']);
+      const dest = rowsCache.find(r => r.barcode === barcode && r.bin === toBin);
+      if (dest){
+        await updateTableRow(dest.index, [barcode, dest.itemName, toBin, dest.qty + qty, now, 'Move']);
+      } else {
+        await addTableRow([barcode, src.itemName, toBin, qty, now, 'Move']);
+      }
+      logEvent('move', `${qty} pcs: ${fromBin} → ${toBin}`, barcode);
+    }
+
+    closeModal();
+    await refreshTable();
+    showToast('Saved to Excel');
+  }catch(e){
+    logEvent('err', e.message, barcode);
+    showToast(e.message, true);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+/* ---------------- Log ---------------- */
+function logEvent(type, detail, barcode){
+  const list = document.getElementById('logList');
+  const empty = list.querySelector('.empty-log');
+  if (empty) empty.remove();
+  const item = document.createElement('div');
+  item.className = 'log-item ' + type;
+  const time = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  const label = { add:'Added', move:'Moved', remove:'Removed', err:'Failed' }[type];
+  item.innerHTML = `
+    <div class="l-main">
+      <div class="l-title">${label} — ${escapeHtml(barcode)}</div>
+      <div class="l-sub">${escapeHtml(detail)}</div>
+    </div>
+    <div class="l-time">${time}</div>`;
+  list.prepend(item);
+}
+
+function clearLog(){
+  document.getElementById('logList').innerHTML = '<div class="empty-log">Scans and updates will show up here.</div>';
+}
+
+/* ---------------- Toast ---------------- */
+let toastTimer = null;
+function showToast(msg, isErr){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!isErr);
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), isErr ? 3500 : 2000);
+}
+</script>
+</body>
+</html>
