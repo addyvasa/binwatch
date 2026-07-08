@@ -6,8 +6,51 @@
 <title>BinWatch — Warehouse Scanner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
-<script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
+<script>
+/* Load MSAL + ZXing from multiple CDN mirrors, falling back automatically if one is
+   blocked by a corporate network/firewall/ad-blocker. Sets window.__libStatus with the
+   outcome so the app can report a precise diagnostic instead of a silent failure. */
+window.__libStatus = { msal: 'pending', zxing: 'pending', msalTried: [], zxingTried: [] };
+
+function loadScriptRace(urls, triedArr){
+  return new Promise((resolve) => {
+    let settled = false;
+    let remaining = urls.length;
+    urls.forEach(url => {
+      const s = document.createElement('script');
+      s.src = url;
+      s.onload = () => {
+        if (!settled){ settled = true; resolve({ ok:true, url }); }
+      };
+      s.onerror = () => {
+        triedArr.push(url);
+        remaining--;
+        if (!settled && remaining === 0){ settled = true; resolve({ ok:false }); }
+      };
+      document.head.appendChild(s);
+    });
+  });
+}
+
+(async () => {
+  const msalUrls = [
+    'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js',
+    'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js',
+    'https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js'
+  ];
+  const zxingUrls = [
+    'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
+    'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js'
+  ];
+  const [msalRes, zxingRes] = await Promise.all([
+    loadScriptRace(msalUrls, window.__libStatus.msalTried),
+    loadScriptRace(zxingUrls, window.__libStatus.zxingTried)
+  ]);
+  window.__libStatus.msal = (msalRes.ok && typeof msal !== 'undefined') ? 'ok' : 'failed';
+  window.__libStatus.zxing = (zxingRes.ok && typeof ZXing !== 'undefined') ? 'ok' : 'failed';
+  window.dispatchEvent(new Event('libs-ready'));
+})();
+</script>
 <style>
   :root{
     --bg: #14181C;
@@ -272,6 +315,7 @@
     <button class="btn btn-amber" onclick="toggleSettings()">Open settings</button>
     <div style="height:10px;"></div>
     <button class="btn" id="signInBtn" onclick="signIn()" disabled>Sign in with Microsoft</button>
+    <div id="libStatus" style="display:none; margin-top:14px; font-size:11px; color:#ffb4a4; font-family:'IBM Plex Mono'; line-height:1.5;"></div>
   </div>
 
   <!-- Main scanner UI -->
@@ -389,21 +433,50 @@ let codeReader = null;
 let lastScanTime = 0;
 
 /* ---------------- Init ---------------- */
+function waitForLibs(){
+  return new Promise(resolve => {
+    if (window.__libStatus.msal !== 'pending') return resolve();
+    window.addEventListener('libs-ready', () => resolve(), { once:true });
+  });
+}
+
+function renderLibStatus(){
+  const el = document.getElementById('libStatus');
+  if (!el) return;
+  const s = window.__libStatus;
+  if (s.msal === 'ok' && s.zxing === 'ok'){
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  const lines = [];
+  if (s.msal === 'failed'){
+    lines.push('Sign-in library blocked — tried: ' + s.msalTried.map(u => new URL(u).hostname).join(', '));
+  }
+  if (s.zxing === 'failed'){
+    lines.push('Camera scanner library blocked — tried: ' + s.zxingTried.map(u => new URL(u).hostname).join(', '));
+  }
+  el.textContent = lines.join(' · ') + ' — try switching networks (e.g. mobile data instead of office wifi/VPN), disabling any ad/script blocker, then reload.';
+}
+
 window.addEventListener('load', async () => {
   document.getElementById('cfgClientId').value = CFG.clientId;
   document.getElementById('cfgTenantId').value = CFG.tenantId;
   document.getElementById('cfgFilePath').value = CFG.filePath;
   document.getElementById('cfgSheet').value = CFG.sheet;
   document.getElementById('cfgTable').value = CFG.table;
+  document.getElementById('signInBtn').textContent = 'Loading sign-in library…';
+  await waitForLibs();
+  renderLibStatus();
   initMsal();
   await tryRestoreSession();
 });
 
 function initMsal(){
-  if (!CFG.clientId){ document.getElementById('signInBtn').disabled = true; return; }
-  if (typeof msal === 'undefined'){
-    showToast('Microsoft sign-in library failed to load — check your connection and reload the page', true);
+  if (!CFG.clientId){ document.getElementById('signInBtn').disabled = true; document.getElementById('signInBtn').textContent = 'Sign in with Microsoft'; return; }
+  if (window.__libStatus.msal !== 'ok'){
     document.getElementById('signInBtn').disabled = true;
+    document.getElementById('signInBtn').textContent = 'Sign-in library blocked on this network';
     return;
   }
   try{
@@ -416,9 +489,11 @@ function initMsal(){
       cache:{ cacheLocation:'localStorage', storeAuthStateInCookie:true }
     });
     document.getElementById('signInBtn').disabled = false;
+    document.getElementById('signInBtn').textContent = 'Sign in with Microsoft';
   }catch(e){
     showToast('Could not set up sign-in: ' + e.message, true);
     document.getElementById('signInBtn').disabled = true;
+    document.getElementById('signInBtn').textContent = 'Sign-in setup failed';
   }
 }
 
@@ -558,6 +633,10 @@ async function updateTableRow(index, values){
 /* ---------------- Barcode scanning ---------------- */
 async function toggleScan(){
   if (scanning){ stopScan(); return; }
+  if (window.__libStatus.zxing !== 'ok'){
+    showToast('Camera scanner library did not load — use manual entry below, or switch networks and reload', true);
+    return;
+  }
   try{
     document.getElementById('scanIdle').style.display = 'none';
     document.getElementById('scanOverlay').style.display = 'flex';
