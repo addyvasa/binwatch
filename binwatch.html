@@ -641,7 +641,7 @@ async function toggleScan(){
     document.getElementById('scanIdle').style.display = 'none';
     document.getElementById('scanOverlay').style.display = 'flex';
     codeReader = new ZXing.BrowserMultiFormatReader();
-    const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+    const devices = await codeReader.listVideoInputDevices();
     const backCam = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[devices.length-1];
     scanning = true;
     document.getElementById('scanToggleBtn').textContent = 'Stop scanning';
