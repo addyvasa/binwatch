@@ -295,12 +295,17 @@ function loadScriptRace(urls, triedArr){
         <div class="hint">Root of "My files" = /FileName.xlsx. In a folder = /Folder/FileName.xlsx</div>
       </div>
       <div class="field">
-        <label>Worksheet name</label>
-        <input id="cfgSheet" placeholder="Sheet1">
+        <label>Worksheet name (the stock table)</label>
+        <input id="cfgSheet" placeholder="WH-2 STOCK. A To I">
       </div>
       <div class="field">
-        <label>Table name</label>
-        <input id="cfgTable" placeholder="InventoryTable">
+        <label>Table name (the stock table)</label>
+        <input id="cfgTable" placeholder="WH2StockTable">
+      </div>
+      <div class="field">
+        <label>Item master worksheet name</label>
+        <input id="cfgMasterSheet" placeholder="Sheet1">
+        <div class="hint">Used to auto-fill description/category/customer/pack size when a new Item Code is entered.</div>
       </div>
       <button class="btn btn-amber btn-block" onclick="saveConfig()">Save settings</button>
       <div class="hint" style="margin-top:10px;">Full setup steps (Azure app registration, permissions) are in the README that came with this file.</div>
@@ -389,9 +394,23 @@ function loadScriptRace(urls, triedArr){
       <input id="modalBin" placeholder="e.g. A-01-03" style="text-transform:uppercase;">
     </div>
 
-    <div class="field" id="modalNameWrap" style="display:none;">
-      <label>Item name (new item)</label>
-      <input id="modalItemName" placeholder="Item description">
+    <div id="modalNewItemFields" style="display:none;">
+      <div class="field">
+        <label>Item code</label>
+        <input id="modalItemCode" placeholder="e.g. FG0855" oninput="lookupItemCode()" onblur="lookupItemCode()" style="text-transform:uppercase;">
+        <div id="modalLookupHint" style="font-size:11px; margin-top:4px; font-family:'IBM Plex Mono';"></div>
+      </div>
+      <div class="field">
+        <label>Item description</label>
+        <input id="modalItemDesc" placeholder="Item description">
+      </div>
+      <button type="button" class="btn btn-ghost" style="font-size:11px; padding:6px 8px; margin-bottom:12px;" onclick="toggleMoreFields()">+ More details (pack size, category, customer…)</button>
+      <div id="modalMoreFields" style="display:none;">
+        <div class="field"><label>Pack size</label><input id="modalPackSize" placeholder="Optional"></div>
+        <div class="field"><label>Category</label><input id="modalCategory" placeholder="Optional"></div>
+        <div class="field"><label>J-Number</label><input id="modalJNumber" placeholder="Optional"></div>
+        <div class="field"><label>Customer</label><input id="modalCustomer" placeholder="Optional"></div>
+      </div>
     </div>
 
     <div class="field">
@@ -413,8 +432,18 @@ function loadScriptRace(urls, triedArr){
 <div class="toast" id="toast"></div>
 
 <script>
+
 /* ---------------- Config & state ---------------- */
-const DEFAULTS = { clientId:'', tenantId:'common', filePath:'/InventoryTemplate.xlsx', sheet:'Sheet1', table:'InventoryTable' };
+const DEFAULTS = { clientId:'', tenantId:'common', filePath:'/Documents/INVENTORY_MASTER_DATA.xlsx', sheet:'WH-2 STOCK. A To I', table:'WH2StockTable', masterSheet:'Sheet1' };
+/* Column order in the "WH-2 STOCK. A To I" table (index-based, matches the real sheet, A–O):
+   0 SR.NO | 1 STATUS | 2 DATE | 3 LOCATION | 4 ITEM CODE | 5 ITEM DESCRIPTION | 6 PACK SIZE |
+   7 CATEGORY | 8 J-NUMBER | 9 Customer | 10 CTN | 11 PCS/CTN | 12 LOOSE | 13 TOTAL QTY | 14 BARCODE
+   (BARCODE is a new column added in O, which was previously blank.)
+
+   Master item lookup lives on a separate sheet ("Sheet1" by default) with columns:
+   # | Item No. | Group Name | Customer Name | P6-Size | Item Description
+   Entering an Item Code in the Add modal looks this up and auto-fills Description,
+   Category (Group Name), Customer (Customer Name) and Pack Size (P6-Size). */
 let CFG = { ...DEFAULTS };
 try {
   const saved = localStorage.getItem('binwatch_cfg');
@@ -425,7 +454,8 @@ let msalInstance = null;
 let account = null;
 let tokenScopes = ['User.Read', 'Files.ReadWrite'];
 
-let rowsCache = [];      // {index, barcode, itemName, bin, qty, lastUpdated, lastAction}
+let rowsCache = [];      // {index, srNo, status, date, bin, itemCode, itemDesc, packSize, category, jNumber, customer, ctn, pcsPerCtn, loose, qty, barcode}
+let masterMap = {};      // itemCode (uppercased) -> {desc, category, customer, packSize}
 let currentBarcode = null;
 let currentAction = null; // 'add' | 'move' | 'remove'
 let scanning = false;
@@ -465,6 +495,7 @@ window.addEventListener('load', async () => {
   document.getElementById('cfgFilePath').value = CFG.filePath;
   document.getElementById('cfgSheet').value = CFG.sheet;
   document.getElementById('cfgTable').value = CFG.table;
+  document.getElementById('cfgMasterSheet').value = CFG.masterSheet;
   document.getElementById('signInBtn').textContent = 'Loading sign-in library…';
   await waitForLibs();
   renderLibStatus();
@@ -517,9 +548,10 @@ async function tryRestoreSession(){
 function saveConfig(){
   CFG.clientId = document.getElementById('cfgClientId').value.trim();
   CFG.tenantId = document.getElementById('cfgTenantId').value.trim() || 'common';
-  CFG.filePath = document.getElementById('cfgFilePath').value.trim() || '/InventoryTemplate.xlsx';
-  CFG.sheet = document.getElementById('cfgSheet').value.trim() || 'Sheet1';
-  CFG.table = document.getElementById('cfgTable').value.trim() || 'InventoryTable';
+  CFG.filePath = document.getElementById('cfgFilePath').value.trim() || DEFAULTS.filePath;
+  CFG.sheet = document.getElementById('cfgSheet').value.trim() || DEFAULTS.sheet;
+  CFG.table = document.getElementById('cfgTable').value.trim() || DEFAULTS.table;
+  CFG.masterSheet = document.getElementById('cfgMasterSheet').value.trim() || DEFAULTS.masterSheet;
   try{ localStorage.setItem('binwatch_cfg', JSON.stringify(CFG)); }catch(e){}
   try{ initMsal(); }catch(e){ /* surfaced inside initMsal already */ }
   showToast('Settings saved');
@@ -598,21 +630,61 @@ async function graphFetch(pathSuffix, options = {}){
 async function refreshTable(){
   try{
     showToast('Syncing with Excel…');
-    const data = await graphFetch(`/tables/${encodeURIComponent(CFG.table)}/rows`);
-    rowsCache = (data.value || []).map((row, i) => ({
-      index: i,
-      barcode: String(row.values[0][0] ?? '').trim(),
-      itemName: String(row.values[0][1] ?? ''),
-      bin: String(row.values[0][2] ?? ''),
-      qty: Number(row.values[0][3] ?? 0),
-      lastUpdated: row.values[0][4] ?? '',
-      lastAction: row.values[0][5] ?? ''
-    }));
+    const [stockData] = await Promise.all([
+      graphFetch(`/tables/${encodeURIComponent(CFG.table)}/rows`),
+      fetchMasterData()
+    ]);
+    rowsCache = (stockData.value || []).map((row, i) => {
+      const v = row.values[0];
+      return {
+        index: i,
+        srNo: v[0] ?? '',
+        status: v[1] ?? '',
+        date: v[2] ?? '',
+        bin: String(v[3] ?? '').trim(),
+        itemCode: v[4] ?? '',
+        itemDesc: v[5] ?? '',
+        packSize: v[6] ?? '',
+        category: v[7] ?? '',
+        jNumber: v[8] ?? '',
+        customer: v[9] ?? '',
+        ctn: v[10] ?? '',
+        pcsPerCtn: v[11] ?? '',
+        loose: v[12] ?? '',
+        qty: Number(v[13] ?? 0),
+        barcode: String(v[14] ?? '').trim()
+      };
+    });
     setStatus(true);
-    showToast(`Synced — ${rowsCache.length} rows`);
+    showToast(`Synced — ${rowsCache.length} rows, ${Object.keys(masterMap).length} master items`);
     if (currentBarcode) renderTicket(currentBarcode);
   }catch(e){
     showToast('Sync failed: ' + e.message, true);
+  }
+}
+
+/* Pulls the item master list (Item Code -> description/category/customer/pack size)
+   from the configured master worksheet so new-item entry can auto-fill from a code. */
+async function fetchMasterData(){
+  try{
+    const data = await graphFetch(`/worksheets('${encodeURIComponent(CFG.masterSheet)}')/usedRange(valuesOnly=true)`);
+    const rows = data.values || [];
+    const map = {};
+    // Expected header row: # | Item No. | Group Name | Customer Name | P6-Size | Item Description
+    for (let i = 1; i < rows.length; i++){
+      const r = rows[i];
+      const code = String(r[1] ?? '').trim().toUpperCase();
+      if (!code) continue;
+      map[code] = {
+        category: r[2] ?? '',
+        customer: r[3] ?? '',
+        packSize: r[4] ?? '',
+        desc: r[5] ?? ''
+      };
+    }
+    masterMap = map;
+  }catch(e){
+    showToast('Item master lookup failed to load: ' + e.message, true);
   }
 }
 
@@ -685,9 +757,9 @@ function renderTicket(barcode){
   const matches = rowsCache.filter(r => r.barcode === barcode);
   const ticket = document.getElementById('ticket');
   ticket.style.display = 'block';
-  document.getElementById('tBarcode').textContent = barcode;
+  document.getElementById('tBarcode').textContent = matches.length ? `${barcode} · ${matches[0].itemCode || 'no item code'}` : barcode;
   document.getElementById('tNewTag').style.display = matches.length ? 'none' : 'inline-block';
-  document.getElementById('tName').textContent = matches.length ? matches[0].itemName || '(unnamed item)' : 'Unrecognized barcode';
+  document.getElementById('tName').textContent = matches.length ? (matches[0].itemDesc || '(no description)') : 'Unrecognized barcode';
 
   const list = document.getElementById('tBinList');
   list.innerHTML = '';
@@ -718,10 +790,18 @@ function openAction(action){
   document.getElementById('modalSub').textContent = currentBarcode;
 
   document.getElementById('modalFromBinWrap').style.display = action === 'move' ? 'block' : 'none';
-  document.getElementById('modalNameWrap').style.display = (action === 'add' && !matches.length) ? 'block' : 'none';
+  const isNewItem = action === 'add' && !matches.length;
+  document.getElementById('modalNewItemFields').style.display = isNewItem ? 'block' : 'none';
+  document.getElementById('modalMoreFields').style.display = 'none';
+  document.getElementById('modalLookupHint').textContent = '';
   document.getElementById('modalBinLabel').textContent = action === 'move' ? 'To bin' : 'Bin location';
   document.getElementById('modalBin').value = matches.length === 1 ? matches[0].bin : '';
-  document.getElementById('modalItemName').value = '';
+  document.getElementById('modalItemCode').value = '';
+  document.getElementById('modalItemDesc').value = '';
+  document.getElementById('modalPackSize').value = '';
+  document.getElementById('modalCategory').value = '';
+  document.getElementById('modalJNumber').value = '';
+  document.getElementById('modalCustomer').value = '';
   document.getElementById('modalQty').value = 1;
 
   if (action === 'move' || action === 'remove'){
@@ -742,16 +822,65 @@ function openAction(action){
   document.getElementById('modalBg').classList.add('open');
 }
 
+/* Called as the user types/leaves the Item Code field on a new-item Add.
+   Looks the code up in the cached item master list and auto-fills the
+   description/category/customer/pack-size fields when found. */
+function lookupItemCode(){
+  const code = document.getElementById('modalItemCode').value.trim().toUpperCase();
+  const hint = document.getElementById('modalLookupHint');
+  if (!code){ hint.textContent = ''; return; }
+  const hit = masterMap[code];
+  if (hit){
+    document.getElementById('modalItemDesc').value = hit.desc || '';
+    document.getElementById('modalCategory').value = hit.category || '';
+    document.getElementById('modalCustomer').value = hit.customer || '';
+    document.getElementById('modalPackSize').value = hit.packSize || '';
+    hint.textContent = '✓ Found in item master — description auto-filled';
+    hint.style.color = 'var(--add)';
+  } else {
+    hint.textContent = Object.keys(masterMap).length
+      ? '⚠ Not found in item master — enter description manually'
+      : '⚠ Item master not loaded yet — tap Refresh table, then re-enter the code';
+    hint.style.color = '#ffb4a4';
+  }
+}
+
 function closeModal(){ document.getElementById('modalBg').classList.remove('open'); }
+function toggleMoreFields(){
+  const el = document.getElementById('modalMoreFields');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
 function stepQty(delta){
   const el = document.getElementById('modalQty');
   el.value = Math.max(1, (parseInt(el.value || '1', 10) + delta));
 }
 
+/* Builds a full 15-value row array matching the WH-2 STOCK sheet's column order
+   (SR.NO, STATUS, DATE, LOCATION, ITEM CODE, ITEM DESCRIPTION, PACK SIZE, CATEGORY,
+   J-NUMBER, Customer, CTN, PCS/CTN, LOOSE, TOTAL QTY, BARCODE). SR.NO and STATUS are
+   carried forward unchanged from an existing row, or left blank on a brand-new row
+   since their numbering/coding scheme is managed elsewhere in the workbook.
+   CTN / PCS-per-CTN / LOOSE are likewise preserved as-is — the app only manages
+   running total quantity, not packing breakdowns. */
+function buildRowValues({ barcode, bin, qty, sourceRow }){
+  const now = new Date().toLocaleDateString();
+  const srNo = sourceRow ? sourceRow.srNo : '';
+  const status = sourceRow ? sourceRow.status : '';
+  const itemCode = sourceRow ? sourceRow.itemCode : document.getElementById('modalItemCode').value.trim();
+  const itemDesc = sourceRow ? sourceRow.itemDesc : document.getElementById('modalItemDesc').value.trim();
+  const packSize = sourceRow ? sourceRow.packSize : document.getElementById('modalPackSize').value.trim();
+  const category = sourceRow ? sourceRow.category : document.getElementById('modalCategory').value.trim();
+  const jNumber  = sourceRow ? sourceRow.jNumber  : document.getElementById('modalJNumber').value.trim();
+  const customer = sourceRow ? sourceRow.customer : document.getElementById('modalCustomer').value.trim();
+  const ctn = sourceRow ? sourceRow.ctn : '';
+  const pcsPerCtn = sourceRow ? sourceRow.pcsPerCtn : '';
+  const loose = sourceRow ? sourceRow.loose : '';
+  return [srNo, status, now, bin, itemCode, itemDesc, packSize, category, jNumber, customer, ctn, pcsPerCtn, loose, qty, barcode];
+}
+
 async function confirmAction(){
   const qty = Math.max(1, parseInt(document.getElementById('modalQty').value || '1', 10));
   const barcode = currentBarcode;
-  const now = new Date().toISOString();
   const btn = document.getElementById('modalConfirmBtn');
   btn.disabled = true;
 
@@ -760,12 +889,15 @@ async function confirmAction(){
       const bin = document.getElementById('modalBin').value.trim().toUpperCase();
       if (!bin) throw new Error('Enter a bin location');
       const existing = rowsCache.find(r => r.barcode === barcode && r.bin === bin);
-      const nameField = document.getElementById('modalItemName').value.trim();
-      const itemName = existing ? existing.itemName : (nameField || rowsCache.find(r=>r.barcode===barcode)?.itemName || '');
+      const anyExisting = rowsCache.find(r => r.barcode === barcode);
+      if (!existing && !anyExisting){
+        if (!document.getElementById('modalItemCode').value.trim()) throw new Error('Enter an item code for this new barcode');
+        if (!document.getElementById('modalItemDesc').value.trim()) throw new Error('Enter an item description');
+      }
       if (existing){
-        await updateTableRow(existing.index, [barcode, itemName, bin, existing.qty + qty, now, 'Add']);
+        await updateTableRow(existing.index, buildRowValues({ barcode, bin, qty: existing.qty + qty, sourceRow: existing }));
       } else {
-        await addTableRow([barcode, itemName, bin, qty, now, 'Add']);
+        await addTableRow(buildRowValues({ barcode, bin, qty, sourceRow: anyExisting || null }));
       }
       logEvent('add', `+${qty} → ${bin}`, barcode);
 
@@ -774,7 +906,7 @@ async function confirmAction(){
       const existing = rowsCache.find(r => r.barcode === barcode && r.bin === bin);
       if (!existing) throw new Error('That bin has no stock on record');
       if (existing.qty < qty) throw new Error(`Only ${existing.qty} pcs in ${bin}`);
-      await updateTableRow(existing.index, [barcode, existing.itemName, bin, existing.qty - qty, now, 'Remove']);
+      await updateTableRow(existing.index, buildRowValues({ barcode, bin, qty: existing.qty - qty, sourceRow: existing }));
       logEvent('remove', `−${qty} from ${bin}`, barcode);
 
     } else if (currentAction === 'move'){
@@ -785,12 +917,12 @@ async function confirmAction(){
       const src = rowsCache.find(r => r.barcode === barcode && r.bin === fromBin);
       if (!src) throw new Error('Source bin has no stock on record');
       if (src.qty < qty) throw new Error(`Only ${src.qty} pcs in ${fromBin}`);
-      await updateTableRow(src.index, [barcode, src.itemName, fromBin, src.qty - qty, now, 'Move']);
+      await updateTableRow(src.index, buildRowValues({ barcode, bin: fromBin, qty: src.qty - qty, sourceRow: src }));
       const dest = rowsCache.find(r => r.barcode === barcode && r.bin === toBin);
       if (dest){
-        await updateTableRow(dest.index, [barcode, dest.itemName, toBin, dest.qty + qty, now, 'Move']);
+        await updateTableRow(dest.index, buildRowValues({ barcode, bin: toBin, qty: dest.qty + qty, sourceRow: dest }));
       } else {
-        await addTableRow([barcode, src.itemName, toBin, qty, now, 'Move']);
+        await addTableRow(buildRowValues({ barcode, bin: toBin, qty, sourceRow: src }));
       }
       logEvent('move', `${qty} pcs: ${fromBin} → ${toBin}`, barcode);
     }
